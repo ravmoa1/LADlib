@@ -4,6 +4,7 @@
 #include "THcLADSpectrometer.h"
 #include "THcParmList.h"
 #include "THaRunBase.h"
+#include "THaVar.h"
 
 #include <cmath>
 
@@ -751,6 +752,30 @@ Int_t THcLADGEMModule::ReadDatabase(const TDatime &date) {
       fCMbiasV[iAPV] = 0.0;
     }
   }
+
+  // Per-APV-card gain-match constants (optional), e.g. lgem_m0_ugain / lgem_m0_vgain in
+  // PARAM/LAD/GEM/lgem_cal_gain.param: one value per card position 'pos' of the channel map
+  // (12 U, 24 V cards per module). The value MULTIPLIES the strip ADC in Decode(), where the
+  // card is strip/128 = pos (before the beam-hole remapping of the U strips in clustering), so
+  // it should be 1/C for a card with response C. The vectors are cleared first so that a
+  // repeated ReadDatabase() does not apply lgem_modulegain twice.
+  auto loadAPVgains = [&](const char *axisname, UInt_t napv, std::vector<Double_t> &gain) {
+    gain.clear();
+    const std::string key = prefix + "_" + axisname + "gain";
+    THaVar *var           = gHcParms->Find(key.c_str());
+    if (!var)
+      return; // not in the database: all cards keep gain 1 (below)
+    if (var->GetLen() != static_cast<Int_t>(napv)) {
+      Warning(Here("ReadDatabase"), "%s has %d values, but module %s has %u %s cards; ignored, all gains set to 1",
+              key.c_str(), var->GetLen(), GetName(), napv, axisname);
+      return;
+    }
+    gain.resize(napv);
+    gHcParms->GetArray(key.c_str(), gain.data(), static_cast<Int_t>(napv));
+    std::cout << "THcLADGEMModule: " << GetName() << " " << axisname << " APV gains loaded from " << key << std::endl;
+  };
+  loadAPVgains("u", fNAPVs_U, fUgain);
+  loadAPVgains("v", fNAPVs_V, fVgain);
 
   // default all gains to 1 if they were not loaded from the DB and/or if they were loaded with the
   // wrong size:
