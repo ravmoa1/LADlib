@@ -313,12 +313,16 @@ Int_t THcLADGEM::ReadDatabase(const TDatime &date) {
   fCMFilename      = "";
   fPedestalMode    = 0;
   fMaxTracks       = 10000;
+  fTrkDtCut        = 1e30; // no cut unless ltrk_dt_cut is set
   DBRequest list[] = {{"gem_num_modules", &fNModules, kInt}, // should be defined in DB file
                       {"gem_num_layers", &fNLayers, kInt},
                       {"gem_pedfile", &fPedFilename, kString, 0, 1},
                       {"gem_cmfile", &fCMFilename, kString, 0, 1},
                       {"gem_d0_cut", &fD0Cut,  kDouble, 0, 1},
                       {"gem_max_tracks", &fMaxTracks, kInt, 0, 1},
+                      // the same parameter THcLADKine uses to reject tracks; applied here too so that pairs it would
+                      // reject never fill the (capped) track array in busy events
+                      {"trk_dt_cut", &fTrkDtCut, kDouble, 0, 1},
                       {0}
 
   };
@@ -503,18 +507,20 @@ Int_t THcLADGEM::CoarseProcess(TClonesArray &tracks) {
   }
 
   for (auto gemhit1 : f2DHits[fNLayers - 2]) {
-    int gemhit1_id = 0;
     // LHE. The -X is a hard-coded fix to get the right coordinate system. This should be really easy to fix in the
     // param file instead, but we're currently trying to debug low-level gem issues, and doing this is one less moving
     // part.
     TVector3 v_hit1(gemhit1.posX, gemhit1.posY, gemhit1.posZ);
     for (auto gemhit2 : f2DHits[fNLayers - 1]) {
-      int gemhit2_id = 0;
 
       if (!gemhit1.IsGoodHit || !gemhit2.IsGoodHit)
         continue;
 
       double tdiff = gemhit1.TimeMean - gemhit2.TimeMean;         // time difference (TimeMean1 - TimeMean2)
+      // THcLADKine rejects every track with tdiff > ltrk_dt_cut (signed, as there), so skip such pairs before they
+      // take a place in the track array.
+      if (tdiff > fTrkDtCut)
+        continue;
       double tmean = (gemhit1.TimeMean + gemhit2.TimeMean) * 0.5; // average time
 
       TVector3 v_hit2(gemhit2.posX, gemhit2.posY, gemhit2.posZ);
@@ -528,42 +534,12 @@ Int_t THcLADGEM::CoarseProcess(TClonesArray &tracks) {
       // we want to get the prima(0., 0., 0.);
 
       // v_prim (the primary vertex) is computed once per event before this loop.
-      double numer = ((v_prim - v_hit1).Cross((v_prim - v_hit2))).Mag();
-      double denom = (v_hit2 - v_hit1).Mag();
-      // LHE: Uncomment the lines below when runtime starts. Curently ok (doesn't cause crash, but throws many errors)
-      TVector3 v_prim;
-      TString fVertexModuleName = TString(GetApparatus()->GetName()) + ".react"; // Name is currently hard-coded to
-      // be "react". Probably not worth changing
-
-      if (fIgnoreVertex) {
-        v_prim.SetXYZ(0., 0., 0.);
-      } else {
-        fVertexModule = dynamic_cast<THcReactionPoint *>(FindModule(fVertexModuleName.Data(), "THcReactionPoint"));
-
-        if (fVertexModule && fVertexModule->HasVertex()) {
-          v_prim = fVertexModule->GetVertex();
-        } else {
-          // Need to be carful that 0,0,0 doesn't get called during the run (or doesn't make it into the data)
-          v_prim.SetXYZ(0., 0., 0.);
-        }
-      }
 
       double t = (v_prim - v_hit1).Dot(v_hit2 - v_hit1) / (v_hit2 - v_hit1).Mag2();
       TVector3 v_closest = v_hit1 + t * (v_hit2 - v_hit1);
       TVector3 v_dca = v_prim - v_closest;
       double d0 = v_dca.Mag();
-      //double d0_y = TMath::Abs(v_dca.Y());
-      //double d0_x = TMath::Abs(v_dca.X());
-      //double d0_z = TMath::Abs(v_dca.Z());
-
       // here we can put a range/fiducial cut on d0 taking into account the target size
-
-      // Calculate d0 in the x-z plane (y=0)
-      // double numer_xz = std::abs((v_prim.X() - v_hit1.X()) * (v_prim.Z() - v_hit2.Z()) -
-      //            (v_prim.Z() - v_hit1.Z()) * (v_prim.X() - v_hit2.X()));
-      // double denom_xz = std::sqrt(std::pow(v_hit2.X() - v_hit1.X(), 2) +
-      //             std::pow(v_hit2.Z() - v_hit1.Z(), 2));
-      // double d0 = numer_xz / denom_xz;
 
       if (d0 > fD0Cut) {
       //if ( d0_x>fD0Cut[0] || d0_y>fD0Cut[1] || d0_z>fD0Cut[2]) {
@@ -597,13 +573,12 @@ Int_t THcLADGEM::CoarseProcess(TClonesArray &tracks) {
         theGEMTrack->SetD0(d0);
         theGEMTrack->SetZVertex(vpz);
         theGEMTrack->SetYVertex(vpy);
-      }else{
-        cout<<"Too many tracks!!! "<< fNTracks << " >= "<<fMaxTracks<<endl;
+      } else if (fNTracks == fMaxTracks) {
+        cout << "THcLADGEM: more than " << fMaxTracks << " GEM tracks in this event (lgem_max_tracks); the rest are dropped"
+             << endl;
       }
       fNTracks++;
-      gemhit2_id++;
     }
-    gemhit1_id++;
   }
 
   return 0;
