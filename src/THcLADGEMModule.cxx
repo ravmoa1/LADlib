@@ -956,8 +956,15 @@ Int_t THcLADGEMModule::ReadDatabase(const TDatime &date) {
   // card is strip/128 = pos (before the beam-hole remapping of the U strips in clustering), so
   // it should be 1/C for a card with response C. The vectors are cleared first so that a
   // repeated ReadDatabase() does not apply lgem_modulegain twice.
+  // Simulation (is_mc = 1) has no card-to-card gain differences, and the MC replay loads the same
+  // general.param as the data replay, so the measured data constants are NOT applied to MC.
+  if (fIsMC)
+    std::cout << "THcLADGEMModule: " << GetName() << " is_mc = 1: per-APV gains not applied (all set to 1)"
+              << std::endl;
   auto loadAPVgains = [&](const char *axisname, UInt_t napv, std::vector<Double_t> &gain) {
     gain.clear();
+    if (fIsMC)
+      return; // simulation: all cards keep gain 1 (below)
     const std::string key = prefix + "_" + axisname + "gain";
     THaVar *var           = gHcParms->Find(key.c_str());
     if (!var)
